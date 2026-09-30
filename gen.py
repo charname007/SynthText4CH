@@ -24,7 +24,7 @@ import cv2 as cv
 import time
 
 ## Define some configuration variables:
-NUM_IMG = 2  # no. of images to use for generation (-1 to use all available):
+NUM_IMG = -1  # no. of images to use for generation (-1 to use all available):
 INSTANCE_PER_IMAGE = 1  # no. of times to use the same image
 SECS_PER_IMG = 5  # max time per image in seconds
 

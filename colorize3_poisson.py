@@ -85,7 +85,7 @@ class FontColor(object):
 
         # nearest neighbour color:
         # data_col = self.colorsRGB[np.mod(nn, self.ncol), :]
-        data_col = self.colorsRGB[np.random.randint(0,self.ncol), :]
+        data_col = self.colorsRGB[np.mod(nn, self.ncol), :]
 
         col1 = self.sample_normal(data_col[:3], data_col[3:6])
         col2 = self.sample_normal(data_col[6:9], data_col[9:12])
