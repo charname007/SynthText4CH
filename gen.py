@@ -24,16 +24,16 @@ import cv2 as cv
 import time
 
 ## Define some configuration variables:
-NUM_IMG = -1  # no. of images to use for generation (-1 to use all available):
+NUM_IMG = 2  # no. of images to use for generation (-1 to use all available):
 INSTANCE_PER_IMAGE = 1  # no. of times to use the same image
 SECS_PER_IMG = 5  # max time per image in seconds
 
 # path to the data-file, containing image, depth and segmentation:
-DATA_PATH = '/data/cfy/data/results/'
-DB_FNAME = osp.join(DATA_PATH, 'dset.h5')
+DATA_PATH = './data'
+DB_FNAME = osp.join(DATA_PATH, 'sample.h5')
 # url of the data (google-drive public file):
 DATA_URL = 'http://www.robots.ox.ac.uk/~ankush/data.tar.gz'
-OUT_FILE = '/data/cfy/data/results/SynthText_800000.h5'
+OUT_FILE = './SynthText_test.h5'
 
 
 def get_data():
@@ -177,7 +177,7 @@ def main(viz=False):
             # add more blur
             # mean blur
             kernel = np.ones((5, 5), np.float32) / 25
-            gray = cv2.filter2D(gray, -1, kernel)
+            gray = cv.filter2D(gray, -1, kernel)
             # print 'gray',gray.shape,gray
 
             # get segmentation:
@@ -188,7 +188,7 @@ def main(viz=False):
             print('seg info', seg.shape, area.shape, label.shape)
             # re-size uniformly:
             sz = depth.shape[:2][::-1]
-            img = np.array(img.resize(sz, Image.ANTIALIAS))
+            img = np.array(img.resize(sz, Image.LANCZOS))
             seg = np.array(Image.fromarray(seg).resize(sz, Image.NEAREST))
 
             print(colorize(Color.RED, '%d of %d' % (i, end_idx - 1), bold=True))
@@ -229,5 +229,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Genereate Synthetic Scene-Text Images')
     parser.add_argument('--viz', action='store_true', dest='viz', default=False,
                         help='flag for turning on visualizations')
+    parser.add_argument('--DB_FNAME', type=str, default=DB_FNAME,
+                        help='path to the data-file, containing image, depth and segmentation')
+    parser.add_argument('--OUT_FILE', type=str, default=OUT_FILE,
+                        help='path to the output h5 file')
     args = parser.parse_args()
     main(args.viz)

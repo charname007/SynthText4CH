@@ -21,14 +21,18 @@ font_dir = "data/fonts"
 
 # FS = FontState()
 
+#有什么用？
 ft = freetype.Font('data/fonts/more_font/方正隶书简体.ttf', size = 12)
 
 fontfilelist = os.path.join(font_dir,"fontlist.txt")
 fontfiles = open(fontfilelist,'r')
     	
 for fontfile in fontfiles:
+	fontfile = fontfile.strip()
+	if not fontfile:
+		continue
 	fontfilepath = os.path.join(font_dir,fontfile)
-	font = freetype.Font(fontfilepath.strip(), size=12)
+	font = freetype.Font(fontfilepath, size=12)
 	h = []
 	for y in ys:
 		h.append(font.get_sized_glyph_height(float(y)))

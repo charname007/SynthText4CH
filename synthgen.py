@@ -215,7 +215,7 @@ def get_text_placement_mask(xyz,mask,plane,pad=2,viz=False):
     REGION : DICT output of TextRegions.get_regions
     PAD : number of pixels to pad the placement-mask by
     """
-    img, contour, hier = cv2.findContours(mask.copy().astype('uint8'),
+    contour, hier = cv2.findContours(mask.copy().astype('uint8'),
                                     mode=cv2.RETR_CCOMP,
                                     method=cv2.CHAIN_APPROX_SIMPLE)
     contour = [np.squeeze(c).astype('float') for c in contour]
@@ -279,7 +279,6 @@ def get_text_placement_mask(xyz,mask,plane,pad=2,viz=False):
         plt.imshow(mask)
         plt.subplot(1,2,2)
         plt.imshow(~place_mask)
-        plt.hold(True)
         for i in range(len(pts_fp_i32)):
             plt.scatter(pts_fp_i32[i][:,0],pts_fp_i32[i][:,1],
                         edgecolors='none',facecolor='g',alpha=0.5)
@@ -350,7 +349,6 @@ def viz_textbb(fignum,text_im, bb_list,alpha=1.0):
     plt.close(fignum)
     plt.figure(fignum)
     plt.imshow(text_im)
-    plt.hold(True)
     H,W = text_im.shape[:2]
     for i in range(len(bb_list)):
         bbs = bb_list[i]
@@ -551,6 +549,8 @@ class RendererV3(object):
 
         output : 2x4xm matrix of BB coordinates,
                  where, m == number of words.
+                 
+        对于中文字符识别，wordBB退化为了行框
         """
         wrds = text.split()
         bb_idx = np.r_[0, np.cumsum([len(w) for w in wrds])]
@@ -581,7 +581,15 @@ class RendererV3(object):
 
         return wordBB
 
-
+    def char2instanceBB(self, charBB_list):
+        n = len(charBB_list)
+        box = np.zeros((2, 4, n), 'float32')
+        for i, cc in enumerate(charBB_list):
+            pts = np.squeeze(np.concatenate(np.dsplit(cc, cc.shape[-1]), axis=1)).T.astype('float32')
+            rect = cv2.minAreaRect(pts.copy())
+            box[:, :, i] = np.array(cv2.boxPoints(rect)).T
+        return box
+    
     def render_text(self,rgb,depth,seg,area,label,ninstance=1,viz=False):
         """
         rgb   : HxWx3 image rgb values (uint8)
@@ -637,6 +645,7 @@ class RendererV3(object):
 
             idict = {'img':[], 'charBB':None, 'wordBB':None, 'txt':None}
 
+            # idict = {'img':[], 'charBB':None, 'textBB':None, 'txt':None}  # 整体框，替代 wordBB
             m = self.get_num_text_regions(nregions)#np.arange(nregions)#min(nregions, 5*ninstance*self.max_text_regions))
             reg_idx = np.arange(min(2*m,nregions))
             #np.random.shuffle(reg_idx)
@@ -679,18 +688,22 @@ class RendererV3(object):
                     # store the result:
                     itext.append(text)
                     ibb.append(bb)
-                    print(colorize(Color.GREEN, 'text in synthgen.py/render_text append into itext '+text))
+                    print(colorize(Color.GREEN, f'text in synthgen.py/render_text append into itext {text}'))
 
             if  placed:
                 # at least 1 word was placed in this instance:
                 idict['img'] = img
                 idict['txt'] = itext
                 idict['charBB'] = np.concatenate(ibb, axis=2)
-                idict['wordBB'] = self.char2wordBB(idict['charBB'].copy(), ' '.join(itext))
+                idict['wordBB'] = self.char2wordBB(idict['charBB'].copy(), ' '.join(itext)) #这是英文情况下
+                # idict['textBB'] = self.char2instanceBB(ibb)   # 整体框，替代 wordBB
+                
                 print(colorize(Color.GREEN, itext))
                 res.append(idict.copy())
                 if viz:
                     viz_textbb(1,img, [idict['wordBB']], alpha=1.0)
+                    
+                    # viz_textbb(1,img, [idict['textBB']], alpha=1.0)  # 整体框，替代 wordBB
                     viz_masks(2,img,seg,depth,regions['label'])
                     # viz_regions(rgb.copy(),xyz,seg,regions['coeff'],regions['label'])
                     if i < ninstance-1:

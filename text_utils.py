@@ -1,4 +1,3 @@
-
 import numpy as np
 import matplotlib.pyplot as plt 
 import scipy.io as sio
@@ -14,6 +13,10 @@ from pygame import freetype
 from PIL import Image
 import math
 from common import *
+from text_source import TextSource
+from loguru import logger
+
+
 
 def is_chinese(ch):    
     #uc=ch.decode('utf-8')     
@@ -23,8 +26,10 @@ def is_chinese(ch):
         return False
 
 def sample_weighted(p_dict):
-    ps = list(p_dict.keys())
-    return p_dict[np.random.choice(ps,p=ps)]
+    keys = list(p_dict.keys())
+    vals = np.array([p_dict[k] for k in keys], dtype='float64')
+    vals /= vals.sum()
+    return keys[np.random.choice(len(keys), p=vals)]
 
 def move_bb(bbs, t):
     """
@@ -86,15 +91,12 @@ class RenderFont(object):
     """
 
     def __init__(self, data_dir='data'):
-        # distribution over the type of text:
-        # whether to get a single word, paragraph or a line:
-        self.p_text = {0.0 : 'WORD',
-                       0.0 : 'LINE',
-                       1.0 : 'PARA'}
+        # 文本类型分布已移到 TextSource（每行独立采样字串/词/子句）
 
         ## TEXT PLACEMENT PARAMETERS:
         self.f_shrink = 0.90
         self.max_shrink_trials = 5 # 0.9^5 ~= 0.6
+        self.max_font_filter_trials = 50 # 字体覆盖过滤重试次数
         # the minimum number of characters that should fit in a mask
         # to define the maximum font height.
         self.min_nchar = 1
@@ -106,9 +108,9 @@ class RenderFont(object):
         self.p_curved = 1.0
         self.baselinestate = BaselineState()
 
-        # text-source : gets english text:
+        # text-source : samples Chinese char / word / sub-sentence:
         self.text_source = TextSource(min_nchar=self.min_nchar,
-                                      fn=osp.join(data_dir,'newsgroup/'))
+                                      data_dir=data_dir)
 
         # get font-state object:
         self.font_state = FontState(data_dir)
@@ -149,8 +151,6 @@ class RenderFont(object):
                 else:
                     # render the character
                     ch_bounds = font.render_to(surf, (x,y), ch)
-                    ch_bounds.x = x + ch_bounds.x
-                    ch_bounds.y = y - ch_bounds.y
                     x += ch_bounds.width
                     bbs.append(np.array(ch_bounds))
 
@@ -175,8 +175,8 @@ class RenderFont(object):
         wl = len(word_text)
         isword = len(word_text.split())==1
 
-        # do curved iff, the length of the word <= 10
-        if not isword or wl > 10 or np.random.rand() > self.p_curved:
+        # do curved iff, the length of the word <= 8
+        if not isword or wl <= 1 or wl > 8 or np.random.rand() > self.p_curved:
             return self.render_multiline(font, word_text)
 
         # create the surface:
@@ -199,8 +199,6 @@ class RenderFont(object):
         rect.centery = surf.get_rect().centery + rect.height
         rect.centery +=  curve[mid_idx]
         ch_bounds = font.render_to(surf, rect, word_text[mid_idx], rotation=rots[mid_idx])
-        ch_bounds.x = rect.x + ch_bounds.x
-        ch_bounds.y = rect.y - ch_bounds.y
         mid_ch_bb = np.array(ch_bounds)
 
         # render chars to the left and right:
@@ -232,8 +230,6 @@ class RenderFont(object):
                 bbrect = font.render_to(surf, newrect, ch, rotation=rots[i])
             except ValueError:
                 bbrect = font.render_to(surf, newrect, ch)
-            bbrect.x = newrect.x + bbrect.x
-            bbrect.y = newrect.y - bbrect.y
             bbs.append(np.array(bbrect))
             last_rect = newrect
         
@@ -271,10 +267,10 @@ class RenderFont(object):
         locs = [None for i in range(len(text_arrs))]
         out_arr = np.zeros_like(back_arr)
         for i in order:            
-            ba = np.clip(back_arr.copy().astype(np.float), 0, 255)
-            ta = np.clip(text_arrs[i].copy().astype(np.float), 0, 255)
+            ba = np.clip(back_arr.copy().astype(float), 0, 255)
+            ta = np.clip(text_arrs[i].copy().astype(float), 0, 255)
             ba[ba > 127] = 1e8
-            intersect = ssig.fftconvolve(ba,ta[::-1,::-1],mode='valid')
+            intersect = cv2.matchTemplate(ba.astype('float32'), ta.astype('float32'), cv2.TM_CCORR)
             safemask = intersect < 1e8
 
             if not np.any(safemask): # no collision-free position:
@@ -326,50 +322,60 @@ class RenderFont(object):
         return coords
 
 
-    def render_sample(self,font,mask):
+    def _renderable(self, font, text):
+        """实时判断：text 中每个非空白字符是否都能被 font 渲染出字形。"""
+        for ch in text:
+            if ch.isspace():
+                continue
+            m = font.get_metrics(ch)
+            if not m or m[0] is None:
+                return False
+        return True
+
+    def _sample_with_font_filter(self, font, nline, nchar, kind=None):
+        """采样文本并实时过滤字体覆盖：画不出的字符重新采样。"""
+        for _ in range(self.max_font_filter_trials):
+            text = self.text_source.sample(nline, nchar, kind)
+            if len(text) == 0:
+                continue
+            if self._renderable(font, text):
+                return text
+        return []
+
+
+    def render_sample(self, font, mask):
         """
         Places text in the "collision-free" region as indicated
         in the mask -- 255 for unsafe, 0 for safe.
         The text is rendered using FONT, the text content is TEXT.
         """
-        #H,W = mask.shape
-        H,W = self.robust_HW(mask)
-        f_asp = self.font_state.get_aspect_ratio(font)
+        H, W = self.robust_HW(mask)
+        f_asp = self.font_state.get_aspect_ratio(font)   # 约定: 宽/高
 
-        # find the maximum height in pixels:
-        max_font_h = min(0.9*H, (1/f_asp)*W/(self.min_nchar+1))
-        max_font_h = min(max_font_h, self.max_font_h)
-        if max_font_h < self.min_font_h: # not possible to place any text here
-            return #None
+        # 竖直留 10%; 横向保证 floor 之后仍能放下 >= min_nchar 个字
+        max_font_h: float = min(
+            0.9 * H,
+            W / (f_asp * (self.min_nchar + 1)),
+            self.max_font_h,
+        )
+        if max_font_h <= self.min_font_h:      # 没有可放置的区间
+            return None
 
-        # let's just place one text-instance for now
-        ## TODO : change this to allow multiple text instances?
-        i = 0
-        while i < self.max_shrink_trials and max_font_h > self.min_font_h:
-            # if i > 0:
-            #     print colorize(Color.BLUE, "shrinkage trial : %d"%i, True)
-
-            # sample a random font-height:
-            f_h_px = self.sample_font_height_px(self.min_font_h, max_font_h)
-            #print "font-height : %.2f (min: %.2f, max: %.2f)"%(f_h_px, self.min_font_h,max_font_h)
-            # convert from pixel-height to font-point-size:
-            f_h = self.font_state.get_font_size(font, f_h_px)
-
-            # update for the loop
-            max_font_h = f_h_px 
-            i += 1
-
-            font.size = f_h # set the font-size
-
+        for trial in range(self.max_shrink_trials):
+            if max_font_h <= self.min_font_h:  # 窗口已塌缩, 无需再试
+                break
+            f_h_px = float(self.sample_font_height_px(self.min_font_h, max_font_h))
+            f_h = int(self.font_state.get_font_size(font, f_h_px))
+            max_font_h = f_h_px                # 收缩上界: 下轮只会更小
+            font.size = f_h
             # compute the max-number of lines/chars-per-line:
             nline,nchar = self.get_nline_nchar(mask.shape[:2],f_h,f_h*f_asp)
             #print "  > nline = %d, nchar = %d"%(nline, nchar)
 
             assert nline >= 1 and nchar >= self.min_nchar
 
-            # sample text:
-            text_type = sample_weighted(self.p_text)
-            text = self.text_source.sample(nline,nchar,text_type)
+            # sample multi-line text (with font-coverage filtering):
+            text = self._sample_with_font_filter(font, nline, nchar)
             #text = self.text_source.sample(nline,nchar,'PARA')
             #text = self.text_source.sample(nline,nchar,'WORD')
             print('before the if judge',text)
@@ -396,7 +402,9 @@ class RenderFont(object):
             text_mask,loc,bb, _ = self.place_text([txt_arr], mask, [bb])
             if len(loc) > 0:#successful in placing the text collision-free:
                 return text_mask,loc[0],bb[0],text
-        return #None
+        else:
+            logger.debug(f'收缩 {self.max_shrink_trials} 次仍不成功, 放弃该区域')
+        return None
 
 
     def visualize_bb(self, text_arr, bbs):
@@ -428,7 +436,7 @@ class FontState(object):
 
     def __init__(self, data_dir='data'):
 
-        char_freq_path = osp.join(data_dir, 'models/char_freq.cp')        
+        char_freq_path = osp.join(data_dir, 'models/char_freq_ch.cp')        
         font_model_path = osp.join(data_dir, 'models/font_px2pt.cp')
 
         # get character-frequencies in the English language:
@@ -441,7 +449,7 @@ class FontState(object):
 
         # get the names of fonts to use:
         self.FONT_LIST = osp.join(data_dir, 'fonts/fontlist.txt')
-        self.fonts = [os.path.join(data_dir,'fonts',f.strip()) for f in open(self.FONT_LIST)]
+        self.fonts = [os.path.join(data_dir,'fonts',f.strip()) for f in open(self.FONT_LIST, encoding='utf-8') if f.strip()]
 
 
     def get_aspect_ratio(self, font, size=None):
@@ -515,7 +523,7 @@ class FontState(object):
         return font
 
 
-class TextSource(object):
+class _LegacyTextSource(object):
     """
     Provides text for words, paragraphs, sentences.
     """

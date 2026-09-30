@@ -34,6 +34,9 @@ def error(msg):
 class TimeoutException(Exception): pass
 @contextmanager
 def time_limit(seconds):
+    if not hasattr(signal, 'SIGALRM'):   # Windows 无 SIGALRM，直接执行（无超时）
+        yield
+        return
     def signal_handler(signum, frame):
         raise TimeoutException(colorize(Color.RED, "   *** Timed out!", highlight=True))
     signal.signal(signal.SIGALRM, signal_handler)

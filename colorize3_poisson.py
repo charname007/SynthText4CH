@@ -459,6 +459,8 @@ class Colorize(object):
             # get the "location" of the text in the image:
             # this is the minimum x and y coordinates of text:
             loc = np.where(text_arr[i])
+            if loc[0].size == 0:   # 文字 mask 为空（无文字像素），跳过该实例
+                continue
             lx, ly = np.min(loc[0]), np.min(loc[1])
             mx, my = np.max(loc[0]), np.max(loc[1])
             l = np.array([lx, ly])
